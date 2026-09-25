@@ -43,6 +43,7 @@ jobs:
   validate:
     name: Validate inputs
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check input formats
         env:
@@ -71,6 +72,7 @@ jobs:
     if: inputs.platforms == 'both' || inputs.platforms == 'android'
     runs-on: ubuntu-latest
     environment: release
+    timeout-minutes: 60
     steps:
       - name: Checkout source at commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -134,6 +136,7 @@ jobs:
     if: inputs.platforms == 'both' || inputs.platforms == 'ios'
     runs-on: macos-latest
     environment: release
+    timeout-minutes: 90
     steps:
       - name: Checkout source at commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
