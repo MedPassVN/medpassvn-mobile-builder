@@ -1,0 +1,220 @@
+name: Build
+
+# This repository is public and so are its run logs:
+#   1. Never add `actions/upload-artifact`.
+#   2. Never interpolate `${{ inputs.* }}` into `run:`; pass it through `env:`.
+#   3. Never print secrets or decoded files, and never use `set -x`.
+# Only `workflow_dispatch` is allowed. Secrets live in the `release`
+# environment, which is restricted to `main`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Full 40-character commit SHA.'
+        required: true
+      version_name:
+        description: 'Version name (e.g. 1.20.0). Empty uses pubspec.yaml.'
+        required: false
+        default: ''
+      build_number:
+        description: 'Build number (e.g. 91). Empty auto-increments.'
+        required: false
+        default: ''
+      platforms:
+        description: 'Platforms.'
+        type: choice
+        options: [both, android, ios]
+        default: both
+
+run-name: "${{ inputs.platforms }} · ${{ inputs.version_name || 'pubspec' }}+${{ inputs.build_number || 'auto' }} · ${{ inputs.commit_sha }}"
+
+permissions: {}
+
+concurrency:
+  group: build-${{ inputs.commit_sha }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: MedPassVN/medpassvn-mobile
+  FLUTTER_VERSION: '3.47.1'
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check input formats
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::commit_sha must be a full 40-character lowercase hex SHA."; exit 1; }
+          [[ -z "$VERSION_NAME" || "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::version_name must look like X.Y.Z."; exit 1; }
+          [[ -z "$BUILD_NUMBER" || "$BUILD_NUMBER" =~ ^[0-9]+$ ]] \
+            || { echo "::error::build_number must be a positive integer."; exit 1; }
+          {
+            echo "### Build request"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$COMMIT_SHA\` |"
+            echo "| Version name | ${VERSION_NAME:-_(pubspec)_} |"
+            echo "| Build number | ${BUILD_NUMBER:-_(auto)_} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-android:
+    name: Android
+    needs: validate
+    if: inputs.platforms == 'both' || inputs.platforms == 'android'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout source at commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.commit_sha }}
+          # Either a read-only deploy key or a read-only fine-grained PAT.
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Ruby and Bundler
+        uses: ruby/setup-ruby@762794c140bbeda0f1224786aa33b4b46783a6c1 # v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Decode Android Keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo -n "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+
+      - name: Build and Upload to Google Play
+        working-directory: android
+        env:
+          KEYSTORE_FILE_PATH: ${{ runner.temp }}/release.keystore
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PLAY_STORE_JSON_KEY: ${{ secrets.PLAY_STORE_JSON_KEY }}
+          APPSFLYER_DEV_KEY: ${{ secrets.APPSFLYER_DEV_KEY }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: bundle exec fastlane deploy_google_play
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+
+  deploy-ios:
+    name: iOS
+    needs: validate
+    if: inputs.platforms == 'both' || inputs.platforms == 'ios'
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - name: Checkout source at commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.commit_sha }}
+          # Either a read-only deploy key or a read-only fine-grained PAT.
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Xcode version
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Set up Ruby and Bundler
+        uses: ruby/setup-ruby@762794c140bbeda0f1224786aa33b4b46783a6c1 # v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Install FlutterFire CLI
+        run: |
+          dart pub global activate flutterfire_cli
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Install Apple Certificate and Provisioning Profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          BUILD_CERTIFICATE_PASSWORD: ${{ secrets.BUILD_CERTIFICATE_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o "$PP_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
+
+          security import "$CERTIFICATE_PATH" -P "$BUILD_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          rm -f "$CERTIFICATE_PATH"
+
+          UUID=$(security cms -D -i "$PP_PATH" | grep -aA1 "UUID" | grep -oE "[-a-zA-Z0-9]{36}" || true)
+          echo "PROVISIONING_PROFILE_UUID=$UUID" >> "$GITHUB_ENV"
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
+
+      - name: Build IPA and Upload to TestFlight
+        working-directory: ios
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
+          APPSFLYER_DEV_KEY: ${{ secrets.APPSFLYER_DEV_KEY }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: bundle exec fastlane beta
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/build_certificate.p12" "$RUNNER_TEMP/build_pp.mobileprovision"
+          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision
