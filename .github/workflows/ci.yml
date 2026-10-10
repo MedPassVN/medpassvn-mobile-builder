@@ -1,0 +1,163 @@
+name: CI
+
+# PR CI for congminh1254/medpassvn-mobile, dispatched by that repo's ci.yml.
+# This repository is public and so are its run logs — same rules as build.yml:
+#   1. Never add `actions/upload-artifact`.
+#   2. Never interpolate `${{ inputs.* }}` into `run:`; pass it through `env:`.
+#   3. Never print secrets, and never use `set -x`.
+# Passing tests are not printed: the console reporter is `failures-only`.
+#
+# One repository secret (not the `release` environment, which holds signing keys):
+#   MOBILE_CI_TOKEN  fine-grained token on the source repo with Contents: read,
+#                    Pull requests: write and Commit statuses: write. Used to check
+#                    out the commit, post the report comment and set the
+#                    `builder-ci` status that branch protection can require.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Full 40-character commit SHA (PR head).'
+        required: true
+      pr_number:
+        description: 'Pull request number in the source repo.'
+        required: true
+
+run-name: "CI · PR #${{ inputs.pr_number }} · ${{ inputs.commit_sha }}"
+
+permissions: {}
+
+# A newer push to the same PR cancels the older run.
+concurrency:
+  group: ci-pr-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: congminh1254/medpassvn-mobile
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check input formats
+        env:
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::commit_sha must be a full 40-character lowercase hex SHA."; exit 1; }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::pr_number must be a positive integer."; exit 1; }
+
+      - name: Mark commit status pending
+        env:
+          GH_TOKEN: ${{ secrets.MOBILE_CI_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          gh api -X POST "repos/$SOURCE_REPO/statuses/$COMMIT_SHA" \
+            -f state=pending -f context=builder-ci -f description="Running" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
+
+  analyze:
+    name: Analyze
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source at commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.commit_sha }}
+          token: ${{ secrets.MOBILE_CI_TOKEN }}
+          persist-credentials: false
+
+      # From the checked-out source, so CI uses the Flutter version the PR pins.
+      - uses: ./.github/actions/setup-flutter
+
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Run analyzer
+        run: flutter analyze
+
+      - name: Verify generated files are up to date
+        run: |
+          dart run build_runner build -d
+          git diff --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+
+  # Shard index/total is stable across runs, so a red shard reproduces locally
+  # with the same flags.
+  test:
+    name: test (shard ${{ matrix.shard }})
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - name: Checkout source at commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.commit_sha }}
+          token: ${{ secrets.MOBILE_CI_TOKEN }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-flutter
+
+      - name: Run tests
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          flutter test --total-shards 10 --shard-index "$SHARD" \
+            --reporter failures-only \
+            --file-reporter "json:$RUNNER_TEMP/tests.json"
+
+      # One annotation per failing test; the report job reads them back.
+      - name: List failing tests
+        if: failure()
+        run: |
+          [ -f "$RUNNER_TEMP/tests.json" ] || exit 0
+          jq -rs '
+            (map(select(.type == "testStart")) | map({key: (.test.id | tostring), value: .test.name}) | from_entries) as $names
+            | map(select(.type == "testDone" and .result != "success"))
+            | .[] | $names[(.testID | tostring)] // "unknown test"
+          ' "$RUNNER_TEMP/tests.json" > "$RUNNER_TEMP/failed.txt"
+          {
+            echo "### Failing tests"
+            sed 's/^/- /' "$RUNNER_TEMP/failed.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r name; do
+            name=${name//'%'/'%25'}
+            echo "::error title=Test failed::$name"
+          done < "$RUNNER_TEMP/failed.txt"
+
+  report:
+    name: Report
+    needs: [validate, analyze, test]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Comment on the pull request and set commit status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_TOKEN: ${{ secrets.MOBILE_CI_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: scripts/ci-report.sh
