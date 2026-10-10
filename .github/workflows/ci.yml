@@ -1,6 +1,6 @@
 name: CI
 
-# PR CI for MedPassVN/medpassvn-mobile, dispatched by that repo's ci.yml.
+# PR CI for NowTrend/medpassvn-mobile, dispatched by that repo's ci.yml.
 # This repository is public and so are its run logs — same rules as build.yml:
 #   1. Never add `actions/upload-artifact`.
 #   2. Never interpolate `${{ inputs.* }}` into `run:`; pass it through `env:`.
@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SOURCE_REPO: MedPassVN/medpassvn-mobile
+  SOURCE_REPO: NowTrend/medpassvn-mobile
 
 jobs:
   validate:
