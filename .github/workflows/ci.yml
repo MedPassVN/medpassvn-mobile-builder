@@ -9,9 +9,8 @@ name: CI
 #
 # One repository secret (not the `release` environment, which holds signing keys):
 #   MOBILE_CI_TOKEN  fine-grained token on the source repo with Contents: read,
-#                    Pull requests: write and Commit statuses: write. Used to check
-#                    out the commit, post the report comment and set the
-#                    `builder-ci` status that branch protection can require.
+#                    Commit statuses: write. Used to check out the commit and set
+#                    the `builder-ci` status that branch protection can require.
 
 on:
   workflow_dispatch:
@@ -119,7 +118,7 @@ jobs:
             --reporter failures-only \
             --file-reporter "json:$RUNNER_TEMP/tests.json"
 
-      # One annotation per failing test; the report job reads them back.
+      # One annotation per failing test, shown on the run page.
       - name: List failing tests
         if: failure()
         run: |
@@ -144,20 +143,21 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      actions: read
-      checks: read
-      contents: read
     steps:
-      - name: Checkout builder
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Comment on the pull request and set commit status
+      - name: Set commit status
         env:
-          GH_TOKEN: ${{ github.token }}
-          COMMENT_TOKEN: ${{ secrets.MOBILE_CI_TOKEN }}
+          GH_TOKEN: ${{ secrets.MOBILE_CI_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: scripts/ci-report.sh
+          VALIDATE: ${{ needs.validate.result }}
+          ANALYZE: ${{ needs.analyze.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          if [ "$VALIDATE" = success ] && [ "$ANALYZE" = success ] && [ "$TEST" = success ]; then
+            state=success
+          else
+            state=failure
+          fi
+          gh api -X POST "repos/$SOURCE_REPO/statuses/$COMMIT_SHA" \
+            -f state="$state" -f context=builder-ci \
+            -f description="analyze: $ANALYZE, tests: $TEST" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
