@@ -7,11 +7,11 @@ name: CI
 #   3. Never print secrets, and never use `set -x`.
 # Passing tests are not printed: the console reporter is `failures-only`.
 #
-# Repository secrets (not the `release` environment, which holds signing keys):
-#   CI_SOURCE_TOKEN          read-only (Contents: read) token for the source repo.
-#   MOBILE_PR_COMMENT_TOKEN  Pull requests: write + Commit statuses: write on the source
-#                            repo: the report comment, and the `builder-ci` status
-#                            on the commit that branch protection can require.
+# One repository secret (not the `release` environment, which holds signing keys):
+#   MOBILE_CI_TOKEN  fine-grained token on the source repo with Contents: read,
+#                    Pull requests: write and Commit statuses: write. Used to check
+#                    out the commit, post the report comment and set the
+#                    `builder-ci` status that branch protection can require.
 
 on:
   workflow_dispatch:
@@ -53,7 +53,7 @@ jobs:
 
       - name: Mark commit status pending
         env:
-          GH_TOKEN: ${{ secrets.MOBILE_PR_COMMENT_TOKEN }}
+          GH_TOKEN: ${{ secrets.MOBILE_CI_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
           gh api -X POST "repos/$SOURCE_REPO/statuses/$COMMIT_SHA" \
@@ -71,7 +71,7 @@ jobs:
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ inputs.commit_sha }}
-          token: ${{ secrets.CI_SOURCE_TOKEN }}
+          token: ${{ secrets.MOBILE_CI_TOKEN }}
           persist-credentials: false
 
       # From the checked-out source, so CI uses the Flutter version the PR pins.
@@ -106,7 +106,7 @@ jobs:
         with:
           repository: ${{ env.SOURCE_REPO }}
           ref: ${{ inputs.commit_sha }}
-          token: ${{ secrets.CI_SOURCE_TOKEN }}
+          token: ${{ secrets.MOBILE_CI_TOKEN }}
           persist-credentials: false
 
       - uses: ./.github/actions/setup-flutter
@@ -157,7 +157,7 @@ jobs:
       - name: Comment on the pull request and set commit status
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMENT_TOKEN: ${{ secrets.MOBILE_PR_COMMENT_TOKEN }}
+          COMMENT_TOKEN: ${{ secrets.MOBILE_CI_TOKEN }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: scripts/ci-report.sh
