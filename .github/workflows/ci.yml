@@ -9,7 +9,9 @@ name: CI
 #
 # Repository secrets (not the `release` environment, which holds signing keys):
 #   CI_SOURCE_TOKEN          read-only (Contents: read) token for the source repo.
-#   MOBILE_PR_COMMENT_TOKEN  Pull requests: write on the source repo, for the report.
+#   MOBILE_PR_COMMENT_TOKEN  Pull requests: write + Commit statuses: write on the source
+#                            repo: the report comment, and the `builder-ci` status
+#                            on the commit that branch protection can require.
 
 on:
   workflow_dispatch:
@@ -48,6 +50,15 @@ jobs:
             || { echo "::error::commit_sha must be a full 40-character lowercase hex SHA."; exit 1; }
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::pr_number must be a positive integer."; exit 1; }
+
+      - name: Mark commit status pending
+        env:
+          GH_TOKEN: ${{ secrets.MOBILE_PR_COMMENT_TOKEN }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          gh api -X POST "repos/$SOURCE_REPO/statuses/$COMMIT_SHA" \
+            -f state=pending -f context=builder-ci -f description="Running" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
 
   analyze:
     name: Analyze
@@ -143,7 +154,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Comment on the pull request
+      - name: Comment on the pull request and set commit status
         env:
           GH_TOKEN: ${{ github.token }}
           COMMENT_TOKEN: ${{ secrets.MOBILE_PR_COMMENT_TOKEN }}

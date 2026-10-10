@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Posts (or updates) one CI status comment on the source PR. Called by the
+# Posts (or updates) one CI status comment on the source PR and sets the
+# `builder-ci` commit status on the tested SHA. Called by the
 # `report` job of ci.yml; reads job results and failing-test annotations of the
 # current run, so it needs GH_TOKEN with actions:read + checks:read here, and
-# COMMENT_TOKEN with pull-requests:write on $SOURCE_REPO.
+# COMMENT_TOKEN with pull-requests:write + statuses:write on $SOURCE_REPO.
 set -euo pipefail
 
 marker='<!-- medpass-builder-ci -->'
@@ -47,4 +48,12 @@ if [ -n "$existing" ]; then
 else
   GH_TOKEN="$COMMENT_TOKEN" gh api -X POST "repos/$SOURCE_REPO/issues/$PR_NUMBER/comments" -f body="$body" >/dev/null
 fi
+if [ "$n_failed" -eq 0 ]; then
+  state=success description="All $total jobs passed"
+else
+  state=failure description="$n_failed/$total jobs failed"
+fi
+GH_TOKEN="$COMMENT_TOKEN" gh api -X POST "repos/$SOURCE_REPO/statuses/$COMMIT_SHA" \
+  -f state="$state" -f context=builder-ci -f description="$description" -f target_url="$run_url" >/dev/null
+
 echo "Reported to $SOURCE_REPO#$PR_NUMBER."
